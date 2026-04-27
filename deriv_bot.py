@@ -84,14 +84,14 @@ log = logging.getLogger("bot")
 @dataclass
 class Config:
     # Deriv API
-    api_token: str = "iCCn0vuMCzLcq1J"
+    api_token: str = "3nMoTkW49VHJqhH"
     app_id:    str = field(default_factory=lambda: os.getenv("DERIV_APP_ID", "1089"))
     api_url:   str = "wss://ws.binaryws.com/websockets/v3"
 
     # Contract
     symbol:        str   = "R_10"
     expiry_min:    int   = 2
-    barrier:       float = 0.8
+    barrier:       float = 1.86
     contract_type: str   = "EXPIRYRANGE"
     currency:      str   = "USD"
     payout_ratio:  float = 0.49   # actual observed payout ~$0.17 on $0.35 stake
@@ -150,7 +150,7 @@ class Config:
     #   Loss 2 → $0.35 × 2.1 = $0.74      cumulative risk: $1.09
     #   Loss 3 → $0.74 × 2.1 = $1.55      cumulative risk: $2.64  ← max
     marti_factor:    float = 2.1
-    marti_kick_in:   int   = 1    # escalate after this many consecutive losses
+    marti_kick_in:   int   = 2    # escalate after this many consecutive losses
     marti_max_steps: int   = 4    # max escalation steps (0.35 -> 0.74 -> 1.55 -> 3.25)
 
     # ── SETTLEMENT VERIFICATION (NEW) ────────────────────────────────────────
