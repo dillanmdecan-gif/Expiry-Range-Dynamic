@@ -91,7 +91,7 @@ class Config:
     # Contract
     symbol:        str   = "R_10"
     expiry_min:    int   = 2
-    barrier:       float = 1.86
+    barrier:       float = 0.86
     contract_type: str   = "EXPIRYRANGE"
     currency:      str   = "USD"
     payout_ratio:  float = 0.49   # actual observed payout ~$0.17 on $0.35 stake
