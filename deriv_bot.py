@@ -91,7 +91,7 @@ class Config:
     # Contract
     symbol:        str   = "R_10"
     expiry_min:    int   = 2
-    barrier:       float = 0.9
+    barrier:       float = 0.8
     contract_type: str   = "EXPIRYRANGE"
     currency:      str   = "USD"
     payout_ratio:  float = 0.49   # actual observed payout ~$0.17 on $0.35 stake
@@ -111,7 +111,7 @@ class Config:
     t_ticks:         int = 120
 
     # Auto-threshold percentiles (kept as-is from original)
-    vol_percentile:   float = 38.0
+    vol_percentile:   float = 35.0
     range_percentile: float = 35.0
     ema_percentile:   float = 35.0
 
@@ -151,7 +151,7 @@ class Config:
     #   Loss 3 → $0.74 × 2.1 = $1.55      cumulative risk: $2.64  ← max
     marti_factor:    float = 2.1
     marti_kick_in:   int   = 1    # escalate after this many consecutive losses
-    marti_max_steps: int   = 3    # max escalation steps (0.35 -> 0.74 -> 1.55 -> 3.25)
+    marti_max_steps: int   = 4    # max escalation steps (0.35 -> 0.74 -> 1.55 -> 3.25)
 
     # ── SETTLEMENT VERIFICATION (NEW) ────────────────────────────────────────
     # How long to wait total after expiry before giving up on settlement
