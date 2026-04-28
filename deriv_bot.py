@@ -130,11 +130,11 @@ class Config:
     spike_k: float = 3.0
 
     # Z-score limit
-    z_coverage_factor: float = 0.6
+    z_coverage_factor: float = 1.0
 
     # Bayes threshold bounds
-    bayes_min_threshold: float = 0.60
-    bayes_max_threshold: float = 0.80
+    bayes_min_threshold: float = 0.50
+    bayes_max_threshold: float = 0.75
 
     # Risk
     cooldown_after_loss:     int   = 60
@@ -202,7 +202,7 @@ class BayesModel:
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self._bb: Dict[str, List[float]] = {r: [5.0, 2.0] for r in self.REGIMES}
+        self._bb: Dict[str, List[float]] = {r: [3.0, 3.0] for r in self.REGIMES}
         self._w  = [0.0] * 5
         self._b  = 0.0
         self._lr = cfg.bayes_min_threshold * 0.08
