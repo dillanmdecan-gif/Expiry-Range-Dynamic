@@ -159,7 +159,7 @@ class Config:
     # FIX: marti_kick_in raised from 1 → 2. Escalating after a SINGLE loss on a
     # small balance is extremely aggressive (burned 26% of $2.83 on trade 2).
     # Now the bot must lose twice before escalating, giving one free retry at base stake.
-    marti_factor:    float = 1.11
+    marti_factor:    float = 2.12
     marti_kick_in:   int   = 2    # FIX: was 1, now 2 — escalate only after 2 consecutive losses
     marti_max_steps: int   = 4    # max escalation steps
 
