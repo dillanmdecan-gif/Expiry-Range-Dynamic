@@ -91,7 +91,7 @@ class Config:
     # Contract
     symbol:        str   = "R_10"
     expiry_min:    int   = 2
-    barrier:       float = 0.86
+    barrier:       float = 0.9
     contract_type: str   = "EXPIRYRANGE"
     currency:      str   = "USD"
     payout_ratio:  float = 0.49   # actual observed payout ~$0.17 on $0.35 stake
@@ -111,9 +111,9 @@ class Config:
     t_ticks:         int = 120
 
     # Auto-threshold percentiles (kept as-is from original)
-    vol_percentile:   float = 35.0
-    range_percentile: float = 35.0
-    ema_percentile:   float = 35.0
+    vol_percentile:   float = 38.0
+    range_percentile: float = 30.0
+    ema_percentile:   float = 30.0
 
     # ── THRESHOLD FLOOR (NEW) ─────────────────────────────────────────────────
     # Floor = FLOOR_FACTOR × current live metric value.
@@ -130,11 +130,25 @@ class Config:
     spike_k: float = 3.0
 
     # Z-score limit
-    z_coverage_factor: float = 1.0
+    z_coverage_factor: float = 1.0   # was 0.6 — prevents threshold collapsing to floor after any trend
 
     # Bayes threshold bounds
-    bayes_min_threshold: float = 0.50
-    bayes_max_threshold: float = 0.75
+    # FIX: bayes_min_threshold reduced from 0.45 → 0.38.
+    # After Beta(3,3) prior + 2 losses, p_bb drops to 0.429 which was permanently
+    # below the old floor of 0.45, creating a deadlock: bot can't trade → can't win
+    # → p_win never recovers. 0.38 gives breathing room while still filtering noise.
+    # The adaptive_bayes_threshold() method in BayesModel applies a further sliding
+    # floor based on n_trades so the threshold tightens automatically as data grows.
+    bayes_min_threshold: float = 0.38   # effective floor when n_trades >= 100
+    bayes_max_threshold: float = 0.75   # was 0.80
+
+    # FIX: Adaptive Bayes threshold schedule (replaces single hard floor).
+    # Exploration phase (n < bayes_bootstrap_n): threshold = bayes_explore_threshold.
+    # Learning phase (n < bayes_learn_n): threshold linearly ramps up to bayes_min_threshold.
+    # Mature phase (n >= bayes_learn_n): threshold = bayes_min_threshold.
+    bayes_explore_threshold: float = 0.35   # near-random, just block clearly hopeless ticks
+    bayes_bootstrap_n:       int   = 20     # trades before we trust the model at all
+    bayes_learn_n:           int   = 100    # trades where threshold reaches full bayes_min
 
     # Risk
     cooldown_after_loss:     int   = 60
@@ -142,16 +156,12 @@ class Config:
     max_daily_loss_pct:      float = 0.15
 
     # ── MARTINGALE ────────────────────────────────────────────────────────────
-    # Kicks in after MARTI_KICK_IN consecutive losses.
-    # Stake is multiplied by MARTI_FACTOR each step up to MARTI_MAX_STEPS.
-    # After max steps the stake resets to base on the next win or hard reset.
-    # Factor 2.1, kick-in after 2 losses, max 2 steps:
-    #   Loss 1 → base stake ($0.35)        cumulative risk: $0.35
-    #   Loss 2 → $0.35 × 2.1 = $0.74      cumulative risk: $1.09
-    #   Loss 3 → $0.74 × 2.1 = $1.55      cumulative risk: $2.64  ← max
-    marti_factor:    float = 2.1
-    marti_kick_in:   int   = 2    # escalate after this many consecutive losses
-    marti_max_steps: int   = 4    # max escalation steps (0.35 -> 0.74 -> 1.55 -> 3.25)
+    # FIX: marti_kick_in raised from 1 → 2. Escalating after a SINGLE loss on a
+    # small balance is extremely aggressive (burned 26% of $2.83 on trade 2).
+    # Now the bot must lose twice before escalating, giving one free retry at base stake.
+    marti_factor:    float = 1.11
+    marti_kick_in:   int   = 2    # FIX: was 1, now 2 — escalate only after 2 consecutive losses
+    marti_max_steps: int   = 4    # max escalation steps
 
     # ── SETTLEMENT VERIFICATION (NEW) ────────────────────────────────────────
     # How long to wait total after expiry before giving up on settlement
@@ -202,12 +212,36 @@ class BayesModel:
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self._bb: Dict[str, List[float]] = {r: [3.0, 3.0] for r in self.REGIMES}
+        # FIX: Prior changed from [3,3] to [1,1] (uniform prior).
+        # [3,3] acted as 6 phantom trades anchoring p=0.50 too hard. After 2 real losses
+        # p_bb was still only 0.429 (below old min_threshold=0.45) because the pseudo-
+        # counts diluted the signal. With [1,1], real outcomes move the posterior fast.
+        self._bb: Dict[str, List[float]] = {r: [1.0, 1.0] for r in self.REGIMES}
         self._w  = [0.0] * 5
         self._b  = 0.0
         self._lr = cfg.bayes_min_threshold * 0.08
         self._l2 = 0.001
         self._n  = 0
+
+    def adaptive_min_threshold(self) -> float:
+        """
+        FIX: Sliding Bayes gate floor based on number of confirmed trades.
+        - Exploration phase (n < bootstrap_n): use bayes_explore_threshold.
+          The model has no real data; filtering on its own prior is circular.
+        - Learning phase (bootstrap_n <= n < learn_n): linearly ramp from
+          explore_threshold up to bayes_min_threshold.
+        - Mature phase (n >= learn_n): use bayes_min_threshold (full filter).
+        This breaks the chicken-and-egg deadlock while still tightening the
+        gate as data accumulates.
+        """
+        n  = self._n
+        cfg = self.cfg
+        if n < cfg.bayes_bootstrap_n:
+            return cfg.bayes_explore_threshold
+        if n < cfg.bayes_learn_n:
+            t = (n - cfg.bayes_bootstrap_n) / (cfg.bayes_learn_n - cfg.bayes_bootstrap_n)
+            return cfg.bayes_explore_threshold + t * (cfg.bayes_min_threshold - cfg.bayes_explore_threshold)
+        return cfg.bayes_min_threshold
 
     def predict(self, fv: List[float], regime: str) -> Tuple[float, float]:
         a, b    = self._bb[regime]
@@ -218,8 +252,9 @@ class BayesModel:
         w_lr    = min(0.7, self._n / 200)
         p_final = (1 - w_lr) * p_bb + w_lr * p_lr
         threshold = p_bb - 0.5 * sd_bb
-        threshold = max(self.cfg.bayes_min_threshold,
-                        min(self.cfg.bayes_max_threshold, threshold))
+        # FIX: use adaptive floor so early-phase model doesn't self-deadlock
+        min_th = self.adaptive_min_threshold()
+        threshold = max(min_th, min(self.cfg.bayes_max_threshold, threshold))
         return p_final, threshold
 
     def update(self, fv: List[float], regime: str, won: bool):
@@ -243,7 +278,8 @@ class BayesModel:
         var_bb  = (a * b) / ((a + b) ** 2 * (a + b + 1))
         sd_bb   = math.sqrt(var_bb)
         t       = p_bb - 0.5 * sd_bb
-        return max(self.cfg.bayes_min_threshold, min(self.cfg.bayes_max_threshold, t))
+        # FIX: use adaptive floor (consistent with predict())
+        return max(self.adaptive_min_threshold(), min(self.cfg.bayes_max_threshold, t))
 
     def save(self, path: str):
         with open(path, "wb") as f:
@@ -262,15 +298,19 @@ class BayesModel:
             log.info("No saved model - starting fresh.")
 
     def summary(self) -> str:
-        lines = []
+        min_th = self.adaptive_min_threshold()
+        phase  = ("explore" if self._n < self.cfg.bayes_bootstrap_n
+                  else "learning" if self._n < self.cfg.bayes_learn_n
+                  else "mature")
+        lines  = [f"Bayesian model (n={self._n} phase={phase} min_th={min_th:.3f}):"]
         for r in self.REGIMES:
             a, b = self._bb[r]
-            n    = int(a + b - 7)
+            n    = int(a + b - 2)   # subtract [1,1] uniform prior counts
             lines.append(
                 f"  {r:7s}: p={a/(a+b):.3f}  threshold={self.threshold_for(r):.3f}"
                 f"  N={max(0,n)}"
             )
-        return "Bayesian model:\n" + "\n".join(lines)
+        return "\n".join(lines)
 
     @staticmethod
     def _sigmoid(x: float) -> float:
@@ -1123,6 +1163,13 @@ class Bot:
                         profit = float(sell_price) - buy_price
                     else:
                         profit = 0.0
+
+                    # FIX: When profit==0.0 and sell_price is available, use
+                    # sell_price to determine outcome more accurately.
+                    # sell_price=0 → lost (no payout), sell_price>0 → won.
+                    if profit == 0.0 and sell_price is not None:
+                        profit = float(sell_price) - buy_price
+
                     won           = profit > 0
                     settle_source = "proposal_open_contract"
                     break
@@ -1140,11 +1187,52 @@ class Bot:
                 f"[SETTLE] proposal_open_contract did not confirm for {cid} "
                 f"after {self.cfg.settle_poll_attempts} polls — trying profit_table"
             )
+            balance_before = self.client.balance   # snapshot before refresh
             txn = await self.client.profit_table_lookup(cid)
             if txn:
                 profit        = float(txn.get("profit", 0))
-                won           = profit > 0
                 settle_source = "profit_table"
+
+                # FIX: profit_table sometimes returns profit=0.0 for contracts
+                # that actually settled as losses (Deriv API quirk — the field
+                # reflects net P&L but can be truncated/rounded to 0 for losing
+                # EXPIRYRANGE contracts whose payout was 0). When profit==0.0 we
+                # cannot distinguish a true break-even from a misreported loss.
+                # Use the balance delta after refresh as a tiebreaker:
+                #   balance went up   → won (profit_table value is just imprecise)
+                #   balance went down → lost (deduct stake as true profit)
+                #   balance unchanged → ambiguous; treat as void (skip Bayes)
+                if profit == 0.0:
+                    await self.client.refresh_balance()
+                    delta = round(self.client.balance - balance_before, 5)
+                    if delta > 0:
+                        # Balance increased — contract actually won; reconstruct profit
+                        profit = delta
+                        won    = True
+                        log.info(
+                            f"[SETTLE] profit_table profit=0 RESOLVED via balance delta "
+                            f"(Δ={delta:+.5f}) → WON | cid={cid}"
+                        )
+                    elif delta < 0:
+                        # Balance decreased — contract lost; stake was deducted
+                        profit = delta   # negative, e.g. -0.35
+                        won    = False
+                        log.info(
+                            f"[SETTLE] profit_table profit=0 RESOLVED via balance delta "
+                            f"(Δ={delta:+.5f}) → LOST | cid={cid}"
+                        )
+                    else:
+                        # Balance truly unchanged — genuinely ambiguous (e.g. refund/void)
+                        log.warning(
+                            f"[SETTLE] profit_table profit=0 AND balance delta=0 for {cid} "
+                            f"— outcome ambiguous (possible void/refund). Skipping Bayes update."
+                        )
+                        self.risk.release_trade_lock()
+                        return
+                else:
+                    won = profit > 0
+                    await self.client.refresh_balance()
+
                 log.info(
                     f"[SETTLE] profit_table confirmed | cid={cid} "
                     f"profit={profit:+.4f} won={won}"
@@ -1159,8 +1247,9 @@ class Bot:
                 self.risk.release_trade_lock()   # release lock WITHOUT touching martingale
                 return
 
-        # Confirmed settlement
-        await self.client.refresh_balance()
+        # Confirmed settlement — refresh balance only if not already done above
+        if settle_source != "profit_table":
+            await self.client.refresh_balance()
         self.risk.on_close(won, profit)
         self.history.update_last(cid, won, profit, self.client.balance, settle_source)
 
